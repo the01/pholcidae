@@ -6,17 +6,66 @@ import heapq
 import sqlite3
 import os
 import mimetypes
+import threading
 
 # importing modules corresponding to Python version
-if sys.version_info < (3,0,0):
+if sys.version_info < (3, 0, 0):
     import urlparse
     import urllib2
 else:
     from urllib import request as urllib2
     from urllib import parse as urlparse
 
-class Pholcidae:
 
+SQLITE_CREATE_TABLE = """
+    CREATE TABLE `parsed_urls` (`url` VARCHAR(3000) NOT NULL);
+"""
+SQLITE_CREATE_INDEX = """
+    CREATE UNIQUE INDEX `url_UNIQUE` ON `parsed_urls` (`url` ASC);
+"""
+SQLITE_INSERT = """
+    INSERT OR IGNORE INTO `parsed_urls` (`url`) VALUES (?);
+"""
+SQLITE_SELECT = """
+    SELECT url FROM `parsed_urls` WHERE url = ?;
+"""
+
+
+default_dict = {
+    # do we need to follow HTTP redirects?
+    'follow_redirects': True,
+    # what should we append to all links?
+    'append_to_links': '',
+    # what page links do we need to parse?
+    'valid_links': ['(.*)'],
+    # what URLs must be excluded
+    'exclude_links': [],
+    # what is an entry point for crawler?
+    'start_page': '/',
+    # which domain should we parse?
+    'domain': '',
+    # should we ignor pages outside of the given domain?
+    'stay_in_domain': True,
+    # which protocol do we need to use?
+    'protocol': 'http://',
+    # autostart crawler right after initialization?
+    'autostart': False,
+    # cookies to be added to each request
+    'cookies': {},
+    # custom headers to be added to each request
+    'headers': {},
+    # precrawl function to execute
+    'precrawl': None,
+    # postcrawl fucntion to execute
+    'postcrawl': None,
+    # custom callbacks list
+    'callbacks': {},
+    # run as separate thread
+    'threaded': False
+}
+
+
+class Pholcidae(threading.Thread):
     """" Pholcidae is a small and fast web crawler. """
 
     def __init__(self):
@@ -27,22 +76,23 @@ class Pholcidae:
             Creates Pholcidae instance and updates default settings dict.
         """
 
+        # init thread
+        threading.Thread.__init__(self)
         # default local urllib2 opener
         self._opener = None
-        # creating new PriorityList for URLs
-        self._unparsed_urls = PriorityList()
+        # creating new PriorityList for URLs - created in run()
+        self._unparsed_urls = None
         # extending settings with given values
         self._extend_settings()
-        # compiling regular expressions
-        self._compile_regexs()
-
+        # not stopping
+        self._should_stop = False
         # autostart crawler if settings allows
         if self._settings.autostart:
             self.start()
 
-    ############################################################################
-    # PUBLIC METHODS                                                           #
-    ############################################################################
+    # #########################################################################
+    #  PUBLIC METHODS                                                         #
+    # #########################################################################
 
     def crawl(self, response):
 
@@ -63,17 +113,53 @@ class Pholcidae:
 
             Simple crawler start trigger.
         """
+        
+        if self._settings.threaded:
+            # start spider (run()) in a new thread
+            super(Pholcidae, self).start()
+        else:
+            # start spider (run()) in this thread
+            self.run()
+
+    def run(self):
+
+        """
+            @return void
+
+            Simple crawler run.
+        """
+
+        # creating new PriorityList for URLs
+        # (sqlite objects can only be used in creating thread)
+        self._unparsed_urls = PriorityList()
+        # compile and prepare objects
+        self._compile()
 
         # trying to call precrawl function
         self._call_precrawl()
         # start crawling
         self._get_page()
+        # calls postcrawl after heap looping
+        self._call_postcrawl()
+        # destroy database
+        del self._unparsed_urls
 
-    ############################################################################
-    # PRIVATE METHODS                                                          #
-    ############################################################################
+    def stop(self):
 
-    ############################ INIT METHODS ##################################
+        """
+            @return void
+
+            Stop the crawler.
+        """
+
+        self._should_stop = True
+        print "Stop"
+
+    # #########################################################################
+    #  PRIVATE METHODS                                                        #
+    # #########################################################################
+
+    # ########################## INIT METHODS #################################
 
     def _extend_settings(self):
 
@@ -84,46 +170,20 @@ class Pholcidae:
         """
 
         # creating default settings object
-        self._settings = AttrDict({
-            # do we need to follow HTTP redirects?
-            'follow_redirects': True,
-            # what should we append to all links?
-            'append_to_links': '',
-            # what page links do we need to parse?
-            'valid_links': ['(.*)'],
-            # what URLs must be excluded
-            'exclude_links': [],
-            # what is an entry point for crawler?
-            'start_page': '/',
-            # which domain should we parse?
-            'domain': '',
-            # should we ignor pages outside of the given domain?
-            'stay_in_domain': True,
-            # which protocol do we need to use?
-            'protocol': 'http://',
-            # autostart crawler right after initialization?
-            'autostart': False,
-            # cookies to be added to each request
-            'cookies': {},
-            # custom headers to be added to each request
-            'headers': {},
-            # precrawl function to execute
-            'precrawl': None,
-            # postcrawl fucntion to execute
-            'postcrawl': None,
-            # custom callbacks list
-            'callbacks': {}
-        })
+        self._settings = AttrDict(default_dict)
 
         # updating settings with given values
         self._settings.update(self.settings)
 
+    def _compile(self):
         # creating urllib2 opener
         self._create_opener()
         # compiling cookies
         self._compile_cookies()
         # compiling headers
         self._compile_headers()
+        # compiling regular expressions
+        self._compile_regexs()
 
         # adding start point into unparsed list
         start_url = '%s%s%s' % (self._settings.protocol, self._settings.domain,
@@ -199,7 +259,7 @@ class Pholcidae:
             self._opener = urllib2.build_opener(PholcidaeRedirectHandler,
                                                 urllib2.HTTPCookieProcessor())
 
-    ############## PRE, POST CRAWL AND CUSTOM CALLBACK METHODS CALLERS ##################
+    # ######### PRE, POST CRAWL AND CUSTOM CALLBACK METHODS CALLERS ###########
 
     def _call_precrawl(self):
 
@@ -244,7 +304,7 @@ class Pholcidae:
                 return
         self.crawl(data)
 
-    ########################## CRAWLING METHODS ################################
+    # ######################### CRAWLING METHODS ##############################
 
     def _get_page(self):
 
@@ -257,7 +317,7 @@ class Pholcidae:
         valid_statuses = range(200, 299)
 
         # iterating over unparsed links
-        while self._unparsed_urls.heap:
+        while not self._should_stop and self._unparsed_urls.heap:
             # getting link to get
             priority, url, matches = self._unparsed_urls.get()
 
@@ -274,9 +334,7 @@ class Pholcidae:
                     self._call_custom_callback(url_pattern, page)
                 # collecting links from page
                 self._get_page_links(page.body, page.url)
-
-        # calls postcrawl after heap looping
-        self._call_postcrawl()
+        print "Done"
 
     def _get_page_links(self, raw_html, url):
 
@@ -313,7 +371,7 @@ class Pholcidae:
                         else:
                             # 2 (lowest) priority for "out-of-domain" links
                             priority = 2
-                        # average priority for "in-domain" links
+                            # average priority for "in-domain" links
                 # converting relative link into absolute
                 link = urlparse.urljoin(url, link)
                 # stripping unnecessary elements from link string
@@ -339,9 +397,9 @@ class Pholcidae:
         # if hash in URL - assumimg anchor or AJAX
         if link and '#' not in link:
             for regex in self._regex.valid_link:
-                    matches = regex.findall(link)
-                    if matches:
-                        return matches
+                matches = regex.findall(link)
+                if matches:
+                    return matches
         return []
 
     def _is_excluded(self, link):
@@ -369,12 +427,12 @@ class Pholcidae:
 
         if link and '#' not in link:
             for regex in self._regex.valid_link:
-                    matches = regex.findall(link)
-                    if matches:
-                        return regex.pattern
+                matches = regex.findall(link)
+                if matches:
+                    return regex.pattern
         return ''
 
-    ######################### URL FETCHING METHODS #############################
+    # ####################### URL FETCHING METHODS ############################
 
     def _fetch_url(self, url):
 
@@ -393,7 +451,9 @@ class Pholcidae:
             resp = self._opener.open(url + self._settings.append_to_links)
             page = AttrDict({
                 'body': resp.read(),
-                'url': re.sub(re.escape(self._settings.append_to_links) + '$', '', resp.geturl()),
+                'url': re.sub(re.escape(self._settings.append_to_links) + '$',
+                              '',
+                              resp.geturl()),
                 'headers': AttrDict(dict(resp.headers.items())),
                 'cookies': self._parse_cookies(dict(resp.headers.items())),
                 'status': resp.getcode()
@@ -414,7 +474,7 @@ class Pholcidae:
 
         cookies = AttrDict()
         # lowering headers keys
-        headers = {k.lower(): v for k,v in headers.items()}
+        headers = {k.lower(): v for k, v in headers.items()}
         if 'set-cookie' in headers:
             # splitting raw cookies
             raw_cookies = headers['set-cookie'].split(';')
@@ -428,7 +488,6 @@ class Pholcidae:
 
 
 class AttrDict(dict):
-
     """ A dict that allows for object-like property access syntax. """
 
     def __init__(self, new_dict=None):
@@ -447,7 +506,6 @@ class AttrDict(dict):
 
 
 class PholcidaeRedirectHandler(urllib2.HTTPRedirectHandler):
-
     """ Custom URL redirects handler. """
 
     def http_error_302(self, req, fp, code, msg, headers):
@@ -457,7 +515,6 @@ class PholcidaeRedirectHandler(urllib2.HTTPRedirectHandler):
 
 
 class PriorityList(object):
-
     """ List with priority. """
 
     def __init__(self):
@@ -510,7 +567,7 @@ class PriorityList(object):
         if len(self._set) % self._set_disk_sync_freq == 0:
             sync_list = []
             for x in range(0, self._set_disk_sync_freq - 1):
-               sync_list.append(self._set.pop())
+                sync_list.append(self._set.pop())
             self._sync_storage.write(sync_list)
 
     def get(self):
@@ -523,8 +580,8 @@ class PriorityList(object):
 
         return heapq.heappop(self.heap)
 
-class SyncStorage(object):
 
+class SyncStorage(object):
     """ Storage to sync parsed URLs set to persistent storage. """
 
     def __init__(self):
@@ -548,9 +605,9 @@ class SyncStorage(object):
         """
 
         # creating table to store URLs
-        self._cursor.execute('CREATE TABLE `parsed_urls` (`url` VARCHAR(3000) NOT NULL);')
+        self._cursor.execute(SQLITE_CREATE_TABLE)
         # creating index on url field
-        self._cursor.execute('CREATE UNIQUE INDEX `url_UNIQUE` ON `parsed_urls` (`url` ASC);')
+        self._cursor.execute(SQLITE_CREATE_INDEX)
 
         self._connection.commit()
 
@@ -567,7 +624,7 @@ class SyncStorage(object):
             elements = [elements]
 
         for element in elements:
-            self._cursor.execute('INSERT OR IGNORE INTO `parsed_urls` (`url`) VALUES (?);', (element,))
+            self._cursor.execute(SQLITE_INSERT, (element,))
 
         self._connection.commit()
 
@@ -580,7 +637,7 @@ class SyncStorage(object):
             Finds element in storage.
         """
 
-        self._cursor.execute('SELECT url FROM `parsed_urls` WHERE url = ?;', (element,))
+        self._cursor.execute(SQLITE_SELECT, (element,))
         self._connection.commit()
 
         return bool(self._cursor.fetchone())

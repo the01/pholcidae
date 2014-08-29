@@ -1,7 +1,7 @@
 from pholcidae import Pholcidae
 
-class MyTestSpider(Pholcidae):
 
+class MyTestSpider(Pholcidae):
     def before(self):
         print('-------- PRECRAWL ----------')
 
@@ -16,15 +16,25 @@ class MyTestSpider(Pholcidae):
         print(data.url, data.status)
 
     settings = {
-        'domain':       'www.python.org/~guido',
-        'start_page':   '/',
-        'valid_links':  ['(.*)'],
+        'domain': 'www.python.org/~guido',
+        'start_page': '/',
+        'valid_links': ['(.*)'],
         'exclude_links': ['ClaymontJPEGS'],
         'append_to_links': '?a=b',
         'precrawl': 'before',
         'postcrawl': 'after',
-        'callbacks': {'(.*)': 'my_callback'}
+        'callbacks': {'(.*)': 'my_callback'},
+        'threaded': True
     }
+
 
 spider = MyTestSpider()
 spider.start()
+
+try:
+    while spider.isAlive():
+        spider.join(5.0)
+except KeyboardInterrupt:
+    pass
+finally:
+    spider.stop()
